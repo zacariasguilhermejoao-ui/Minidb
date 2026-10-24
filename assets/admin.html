@@ -1,0 +1,202 @@
+<!doctype html><html lang="pt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>MiniDB</title>
+<style>
+:root{--bg:#f4f5f2;--card:#fff;--line:#d9dcd4;--ink:#1c2420;--mut:#6b756e;--ac:#0f6b5c;--red:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:16px 14px 70px}
+h1{font-size:22px;margin:0}h2{font-size:17px;margin:24px 0 8px}h3{font-size:15px;margin:14px 0 6px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input,select,textarea{font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);min-width:0}
+textarea{width:100%;font-family:ui-monospace,Menlo,monospace;font-size:14px;min-height:110px}
+button{font:inherit;padding:10px 14px;border:0;border-radius:8px;background:var(--ac);color:#fff}
+button.g{background:#e6e9e2;color:var(--ink)}button.r{background:var(--red)}button.s{padding:6px 10px;font-size:14px}
+small,.m{color:var(--mut);font-size:13px}
+code,.k{display:block;background:#eef0eb;padding:8px;border-radius:6px;word-break:break-all;font:13px ui-monospace,Menlo,monospace;margin:3px 0 8px}
+pre{background:#eef0eb;padding:10px;border-radius:8px;overflow-x:auto;font:12.5px/1.45 ui-monospace,Menlo,monospace;margin:6px 0}
+.sc{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:#fff}
+table{border-collapse:collapse;font-size:14px;width:100%}th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{background:#eef0eb}
+.err{color:var(--red);margin:8px 0}.ok{color:var(--ac);margin:8px 0}
+details{margin:10px 0}summary{font-weight:600;padding:6px 0}
+</style></head><body><div id="app"></div>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const q2=s=>'"'+String(s).replace(/"/g,'""')+'"';
+const ID=/^[A-Za-z_][A-Za-z0-9_]*$/;
+let T=sessionStorage.t||(location.hash.match(/t=([^&]+)/)||[])[1]||'';sessionStorage.t=T;
+async function api(p,m='GET',b){const r=await fetch('/admin'+p,{method:m,headers:{'X-Admin-Token':T,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+ const j=await r.json();if(!r.ok)throw new Error(j.error||('erro '+r.status));return j}
+const S={view:'home',st:{},ps:[],cur:null,tables:[],lim:null,sql:'',res:null,msg:'',err:'',tname:'',cols:[{n:'',t:'TEXT',ref:''}],grid:null,edit:null,struct:null,lang:'curl',bk:[],files:null,users:[],fns:[],fed:null,fnres:null,jobs:[],env:[]};
+const note=(m,e)=>{S.msg=e?'':m;S.err=e?m:''};
+const go=async f=>{try{await f()}catch(e){note(e.message,1)}draw()};
+const $=id=>document.getElementById(id);
+const sqlP=(sql,params)=>api('/p/'+S.cur.id+'/sql','POST',{sql,params});
+const tabs=async()=>{const b='/p/'+S.cur.id;S.tables=(await api(b+'/tables')).tables;S.lim=await api(b+'/limits');S.bk=(await api(b+'/buckets')).buckets;S.users=(await api(b+'/users')).users;S.fns=(await api(b+'/functions')).functions;S.jobs=(await api(b+'/jobs')).jobs;S.env=(await api(b+'/env')).env};
+const reProjects=async()=>{S.ps=(await api('/projects')).projects;if(S.cur)S.cur=S.ps.find(p=>p.id==S.cur.id)||S.cur};
+const home=()=>go(async()=>{S.view='home';S.cur=null;S.st=await api('/status');await reProjects()});
+const openP=id=>go(async()=>{S.cur=S.ps.find(p=>p.id==id);S.view='proj';S.res=S.grid=S.edit=S.struct=S.files=S.fed=S.fnres=null;S.msg=S.err='';await tabs()});
+const newP=()=>go(async()=>{const n=$('pn').value.trim();if(!n)return;await api('/projects','POST',{name:n});await reProjects();note('Projeto criado')});
+const delP=id=>{if(confirm('Apagar o projeto e todos os dados?'))go(async()=>{await api('/projects/'+id,'DELETE');await home()})};
+const run=sql=>go(async()=>{S.res=await sqlP(sql);await tabs();note(S.res.rows?S.res.rows.length+' linhas':(S.res.changes+' linhas afetadas'))});
+const setAcc=(i,a)=>go(async()=>{const t=S.tables[i].name;await api('/p/'+S.cur.id+'/access','POST',{table:t,access:a});await tabs();note('Acesso de "'+t+'" atualizado')});
+const drop=i=>{const t=S.tables[i].name;if(confirm('Apagar a tabela '+t+'?'))go(async()=>{await sqlP('DROP TABLE '+q2(t));S.grid=S.struct=null;await tabs();note('Tabela apagada')})};
+const copy=t=>{navigator.clipboard&&navigator.clipboard.writeText(t);note('Copiado');draw()};
+// ---- registos
+const loadGrid=async t=>{const r=await sqlP('SELECT rowid AS _rowid, * FROM '+q2(t)+' LIMIT 200');S.grid={t,cols:r.columns.slice(1),rows:r.rows};S.edit=null;S.struct=null};
+const viewT=i=>go(async()=>{await loadGrid(S.tables[i].name)});
+const editRow=i=>{const r=S.grid.rows[i];S.edit={rowid:r[0],vals:S.grid.cols.map((c,j)=>r[j+1]===null?'':String(r[j+1]))};draw()};
+const newRow=()=>{S.edit={rowid:null,vals:S.grid.cols.map(()=>'')};draw()};
+const saveRow=()=>go(async()=>{const g=S.grid,e=S.edit,v=e.vals;
+ if(e.rowid===null){const ix=g.cols.map((c,j)=>j).filter(j=>v[j]!=='');
+  if(ix.length)await sqlP('INSERT INTO '+q2(g.t)+'('+ix.map(j=>q2(g.cols[j])).join(',')+') VALUES('+ix.map(()=>'?').join(',')+')',ix.map(j=>v[j]));
+  else await sqlP('INSERT INTO '+q2(g.t)+' DEFAULT VALUES')}
+ else await sqlP('UPDATE '+q2(g.t)+' SET '+g.cols.map(c=>q2(c)+'=?').join(',')+' WHERE rowid=?',[...v.map(x=>x===''?null:x),e.rowid]);
+ await loadGrid(g.t);await tabs();note('Registo guardado')});
+const delRow=i=>{if(confirm('Apagar este registo?'))go(async()=>{await sqlP('DELETE FROM '+q2(S.grid.t)+' WHERE rowid=?',[S.grid.rows[i][0]]);await loadGrid(S.grid.t);await tabs();note('Registo apagado')})};
+// ---- estrutura
+const reStruct=async()=>{S.struct.d=await api('/p/'+S.cur.id+'/schema/'+encodeURIComponent(S.struct.t));await tabs()};
+const structure=i=>go(async()=>{S.struct={t:S.tables[i].name};S.grid=S.edit=null;await reStruct()});
+const addIdx=()=>go(async()=>{const t=S.struct.t,c=$('ix_c').value;await sqlP('CREATE '+($('ix_u').checked?'UNIQUE ':'')+'INDEX '+q2('idx_'+t+'_'+c)+' ON '+q2(t)+'('+q2(c)+')');await reStruct();note('Índice criado')});
+const dropIdx=n=>go(async()=>{await sqlP('DROP INDEX '+q2(n));await reStruct();note('Índice apagado')});
+const addCol2=()=>go(async()=>{const n=$('ac_n').value.trim();if(!ID.test(n))throw new Error('Nome de coluna inválido');
+ const ref=$('ac_r').value;await sqlP('ALTER TABLE '+q2(S.struct.t)+' ADD COLUMN '+q2(n)+' '+(ref?'INTEGER REFERENCES '+q2(ref)+'(id)':$('ac_t').value));await reStruct();note('Coluna adicionada')});
+// ---- nova tabela
+const addCol=()=>{S.cols.push({n:'',t:'TEXT',ref:''});draw()};
+const rmCol=i=>{S.cols.splice(i,1);draw()};
+const mk=()=>{const n=S.tname.trim();if(!ID.test(n)){note('Nome da tabela: letras, números e _',1);return draw()}
+ const cs=S.cols.filter(c=>c.n.trim());for(const c of cs)if(!ID.test(c.n.trim())){note('Coluna inválida: '+c.n,1);return draw()}
+ const sql='CREATE TABLE '+q2(n)+' (id INTEGER PRIMARY KEY AUTOINCREMENT'+cs.map(c=>', '+q2(c.n.trim())+' '+(c.ref?'INTEGER REFERENCES '+q2(c.ref)+'(id)':c.t)).join('')+')';
+ S.tname='';S.cols=[{n:'',t:'TEXT',ref:''}];run(sql)};
+// ---- backup
+const exportData=()=>go(async()=>{const j=await api('/p/'+S.cur.id+'/export');const txt=JSON.stringify(j);
+ if(window.Android)note(Android.saveFile(S.cur.name.replace(/[^A-Za-z0-9_-]/g,'_')+'-backup.json',txt));else note('Exportar só funciona dentro do app',1)});
+const importData=inp=>go(async()=>{const f=inp.files[0];if(!f)return;const j=JSON.parse(await f.text());
+ const r=await api('/p/'+S.cur.id+'/import','POST',j);await tabs();note('Importado: '+r.imported_tables+' tabelas, '+r.imported_rows+' registos')});
+// ---- chaves e limites
+const saveLim=()=>go(async()=>{await api('/p/'+S.cur.id+'/limits','POST',{rpm:+$('l_r').value||0,storage_mb:+$('l_m').value||0,transfer_mb:+$('l_t').value||0});await tabs();note('Limites guardados')});
+const rotate=w=>{if(confirm('A chave antiga deixa de funcionar. Continuar?'))go(async()=>{await api('/p/'+S.cur.id+'/rotate','POST',{which:w});await reProjects();note('Chave nova gerada')})};
+const saveCfg=()=>go(async()=>{await api('/settings','POST',{relay_url:$('cfg_u').value,tunnel:$('cfg_t').value,token:$('cfg_k').value});await new Promise(r=>setTimeout(r,1500));S.st=await api('/status');note('Guardado')});
+// ---- armazenamento e usuarios
+const newBucket=()=>go(async()=>{const n=$('bk_n').value.trim();if(!ID.test(n))throw new Error('Nome do bucket: letras, números e _');await api('/p/'+S.cur.id+'/buckets','POST',{name:n,public:$('bk_p').checked});await tabs();note('Bucket criado')});
+const togBucket=i=>go(async()=>{const b=S.bk[i];await api('/p/'+S.cur.id+'/buckets','POST',{name:b.name,public:!b.public});await tabs();note('Bucket "'+b.name+'" agora é '+(b.public?'privado':'público'))});
+const delBucket=i=>{const b=S.bk[i];if(confirm('Apagar o bucket '+b.name+' e todos os ficheiros?'))go(async()=>{await api('/p/'+S.cur.id+'/buckets/delete','POST',{name:b.name});S.files=null;await tabs();note('Bucket apagado')})};
+const listFiles=async n=>(await api('/p/'+S.cur.id+'/files','POST',{bucket:n})).files;
+const showFiles=i=>go(async()=>{const b=S.bk[i];S.files={bucket:b.name,pub:b.public,rows:await listFiles(b.name)}});
+const delFile=j=>{if(confirm('Apagar o ficheiro?'))go(async()=>{await api('/p/'+S.cur.id+'/files/delete','POST',{id:S.files.rows[j].id});S.files.rows=await listFiles(S.files.bucket);await tabs();note('Ficheiro apagado')})};
+const resetUser=i=>go(async()=>{const u=S.users[i];const r=await api('/p/'+S.cur.id+'/users/reset','POST',{id:u.id});note('Código para '+u.email+': '+r.code+' (válido 1 hora)')});
+const delUser=i=>{if(confirm('Apagar este usuário?'))go(async()=>{await api('/p/'+S.cur.id+'/users/delete','POST',{id:S.users[i].id});await tabs();note('Usuário apagado')})};
+// ---- funcoes
+const FN_TPL='// req: {method, path, query, headers, body, raw, role, user}\n// role: "service" (chave secreta), "anon" (chave pública) ou "webhook"\n// user: usuário logado (ou null)\nfunction handler(req) {\n  var linhas = db.query("SELECT COUNT(*) AS total FROM sqlite_master");\n  return { status: 200, json: { ola: "mundo", total: linhas[0].total } };\n}\n';
+const newFn=()=>{S.fed={name:'',kind:'endpoint',schedule:0,enabled:true,code:FN_TPL};draw()};
+const editFn=i=>{const f=S.fns[i];S.fed={name:f.name,kind:f.kind,schedule:f.schedule_min,enabled:f.enabled==1,code:f.code,old:true};draw()};
+const saveFn=()=>go(async()=>{const f=S.fed;if(!ID.test(f.name))throw new Error('Nome da função: letras, números e _');await api('/p/'+S.cur.id+'/functions','POST',{name:f.name,code:f.code,kind:f.kind,schedule_min:+f.schedule||0,enabled:f.enabled});S.fed=null;await tabs();note('Função guardada')});
+const togFn=i=>go(async()=>{const f=S.fns[i];await api('/p/'+S.cur.id+'/functions','POST',{name:f.name,code:f.code,kind:f.kind,schedule_min:f.schedule_min,enabled:f.enabled!=1});await tabs();note('Função '+(f.enabled==1?'desativada':'ativada'))});
+const delFn=i=>{const f=S.fns[i];if(confirm('Apagar a função '+f.name+'?'))go(async()=>{await api('/p/'+S.cur.id+'/functions/delete','POST',{name:f.name});await tabs();note('Função apagada')})};
+const testFn=i=>go(async()=>{const f=S.fns[i];const b=prompt('Corpo JSON de teste (opcional)','');let body=null;if(b){try{body=JSON.parse(b)}catch(e){body=b}}S.fnres={name:f.name,r:await api('/p/'+S.cur.id+'/functions/test','POST',{name:f.name,body})};await tabs();note('Teste executado')});
+const clearJobs=()=>go(async()=>{await api('/p/'+S.cur.id+'/jobs/clear','POST',{});await tabs();note('Tarefas concluídas limpas')});
+const addEnv=()=>go(async()=>{const k=$('ev_k').value.trim();if(!ID.test(k))throw new Error('Nome: letras, números e _');await api('/p/'+S.cur.id+'/env','POST',{key:k,value:$('ev_v').value});await tabs();note('Variável guardada')});
+const delEnv=i=>go(async()=>{await api('/p/'+S.cur.id+'/env/delete','POST',{key:S.env[i].k});await tabs();note('Variável apagada')});
+// ---- documentação
+function docs(){const p=S.cur,base=S.st.public_url||'https://SEU-RELAY/t/SEU-TUNEL',k=p.pk,sk=p.sk,t=(S.tables[0]||{}).name||'tabela',L=S.lang;
+ const A={
+ curl:['# listar','curl "'+base+'/rest/'+t+'?limit=20" -H "apikey: '+k+'"','# inserir (precisa de login ou chave secreta)','curl -X POST "'+base+'/rest/'+t+'" -H "apikey: '+k+'" -H "Authorization: Bearer TOKEN_DO_USUARIO" -d \'{"campo":"valor"}\'','# login','curl -X POST "'+base+'/auth/login" -H "apikey: '+k+'" -d \'{"email":"a@b.com","password":"123456"}\''],
+ js:['const BASE="'+base+'", KEY="'+k+'";','const H={apikey:KEY,"Content-Type":"application/json"};','const lista=await fetch(BASE+"/rest/'+t+'?limit=20",{headers:H}).then(r=>r.json());','// login','const {token}=await fetch(BASE+"/auth/login",{method:"POST",headers:H,body:JSON.stringify({email,password})}).then(r=>r.json());','// inserir','await fetch(BASE+"/rest/'+t+'",{method:"POST",headers:{...H,Authorization:"Bearer "+token},body:JSON.stringify({campo:"valor"})});'],
+ flutter:['import \'dart:convert\';','import \'package:http/http.dart\' as http;','','const base = \''+base+'\';','final headers = {\'apikey\': \''+k+'\', \'Content-Type\': \'application/json\'};','','final r = await http.get(Uri.parse(\'$base/rest/'+t+'?limit=20\'), headers: headers);','final lista = jsonDecode(r.body);','','await http.post(Uri.parse(\'$base/rest/'+t+'\'),','  headers: {...headers, \'Authorization\': \'Bearer \'+token},','  body: jsonEncode({\'campo\': \'valor\'}));'],
+ android:['// build.gradle: implementation("com.squareup.okhttp3:okhttp:4.12.0")','val client = OkHttpClient()','val req = Request.Builder()','  .url("'+base+'/rest/'+t+'?limit=20")','  .header("apikey", "'+k+'")','  .build()','client.newCall(req).execute().use { println(it.body?.string()) }'],
+ ios:['var req = URLRequest(url: URL(string: "'+base+'/rest/'+t+'?limit=20")!)','req.setValue("'+k+'", forHTTPHeaderField: "apikey")','let (data, _) = try await URLSession.shared.data(for: req)','print(String(data: data, encoding: .utf8)!)']};
+ const eps=['GET    /rest/{tabela}?coluna=valor&order=-coluna&limit=100&offset=0','POST   /rest/{tabela}            corpo JSON com as colunas','GET    /rest/{tabela}/{id}','PATCH  /rest/{tabela}/{id}        corpo JSON com o que muda','DELETE /rest/{tabela}/{id}','POST   /auth/signup | /auth/login   {email,password} -> {token}','GET    /auth/me                  header Authorization: Bearer TOKEN','POST   /storage/{bucket}/{nome.ext}   corpo = ficheiro -> {id,url}','GET    /storage/{bucket}               listar ficheiros','GET    /storage/{bucket}/{id}          descarregar (privado: dono ou chave secreta)','DELETE /storage/{bucket}/{id}','POST   /storage/sign   {id,expires_in} -> URL assinada de ficheiro privado','POST   /auth/logout | /auth/password {old_password,new_password} | /auth/reset {email,code,new_password}','ANY    /fn/{funcao}              executa uma função (endpoint)','POST   /hooks/{projeto}/{funcao}/{segredo}   webhook, sem chave (o segredo vai na URL)','POST   /sql                      {sql, params} só com a chave secreta'];
+ const tl=S.tables.map(x=>'  '+x.name+'  ('+({private:'privada',read:'site lê',users:'logados escrevem',open:'aberta'}[x.access])+')').join('\n')||'  (ainda sem tabelas)';
+ return {eps:eps.join('\n'),tl,code:A[L].join('\n')}}
+// ---- secções
+const msgs=()=>(S.err?'<div class="err">'+esc(S.err)+'</div>':'')+(S.msg?'<div class="ok">'+esc(S.msg)+'</div>':'');
+function result(){const r=S.res;if(!r||!r.columns)return '';
+ return '<div class="sc"><table><tr>'+r.columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr>'+r.rows.map(x=>'<tr>'+x.map(v=>'<td>'+(v===null?'<i class="m">null</i>':esc(v))+'</td>').join('')+'</tr>').join('')+'</table></div>'}
+function secGrid(){const g=S.grid;let h='<div class="card"><div class="top"><b>'+esc(g.t)+'</b><span><button class="s" onclick="newRow()">+ Registo</button> <button class="s g" onclick="S.grid=S.edit=null;draw()">Fechar</button></span></div>';
+ if(S.edit){h+='<h3>'+(S.edit.rowid===null?'Novo registo':'Editar registo')+'</h3>'+g.cols.map((c,j)=>'<small>'+esc(c)+'</small><br><input style="width:100%;margin-bottom:6px" value="'+esc(S.edit.vals[j])+'" oninput="S.edit.vals['+j+']=this.value">').join('')+
+  '<div class="row"><button onclick="saveRow()">Guardar</button><button class="g" onclick="S.edit=null;draw()">Cancelar</button></div>'}
+ h+='<div class="sc" style="margin-top:8px"><table><tr><th></th>'+g.cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr>'+
+  g.rows.map((r,i)=>'<tr><td><button class="s g" onclick="editRow('+i+')">editar</button> <button class="s r" onclick="delRow('+i+')">x</button></td>'+r.slice(1).map(v=>'<td>'+(v===null?'<i class="m">null</i>':esc(v))+'</td>').join('')+'</tr>').join('')+'</table></div>';
+ return h+(g.rows.length>=200?'<small>Mostra os primeiros 200 registos.</small>':'')+'</div>'}
+function secStruct(){const s=S.struct,d=s.d||{columns:[],fks:[],indexes:[]};
+ return '<div class="card"><div class="top"><b>Estrutura de '+esc(s.t)+'</b><button class="s g" onclick="S.struct=null;draw()">Fechar</button></div>'+
+ '<h3>Colunas</h3><div class="sc"><table><tr><th>nome</th><th>tipo</th><th>chave</th><th>obrigatória</th></tr>'+d.columns.map(c=>'<tr><td>'+esc(c.name)+'</td><td>'+esc(c.type)+'</td><td>'+(c.pk?'PK':'')+'</td><td>'+(c.notnull?'sim':'')+'</td></tr>').join('')+'</table></div>'+
+ '<h3>Relações</h3>'+(d.fks.length?d.fks.map(f=>'<div>'+esc(f.from)+' &rarr; '+esc(f.table)+'('+esc(f.to)+')</div>').join(''):'<small>Sem relações.</small>')+
+ '<h3>Índices</h3>'+(d.indexes.length?d.indexes.map(x=>'<div class="row">'+esc(x.name)+(x.unique?' <small>único</small>':'')+(x.origin=='c'?' <button class="s r" onclick="dropIdx(\''+esc(x.name)+'\')">apagar</button>':' <small>automático</small>')+'</div>').join(''):'<small>Sem índices.</small>')+
+ '<h3>Criar índice</h3><div class="row"><select id="ix_c">'+d.columns.map(c=>'<option>'+esc(c.name)+'</option>').join('')+'</select><label><input type="checkbox" id="ix_u"> único</label><button class="s" onclick="addIdx()">Criar</button></div>'+
+ '<h3>Adicionar coluna</h3><div class="row"><input id="ac_n" placeholder="nome" style="flex:1"><select id="ac_t">'+['TEXT','INTEGER','REAL','BLOB','NUMERIC'].map(x=>'<option>'+x+'</option>').join('')+'</select>'+
+ '<select id="ac_r"><option value="">sem relação</option>'+S.tables.map(t=>'<option value="'+esc(t.name)+'">liga a '+esc(t.name)+'</option>').join('')+'</select><button class="s" onclick="addCol2()">Adicionar</button></div></div>'}
+function secTables(){return '<h2>Tabelas</h2>'+(S.grid?secGrid():'')+(S.struct?secStruct():'')+
+ (S.tables.map((t,i)=>'<div class="card"><div class="row"><b>'+esc(t.name)+'</b><small>'+t.rows+' linhas</small></div><div class="row" style="margin-top:8px"><select onchange="setAcc('+i+',this.value)">'+
+ [['private','Privada'],['read','Site lê'],['users','Site lê, logados escrevem'],['open','Todos leem e escrevem']].map(o=>'<option value="'+o[0]+'"'+(t.access==o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
+ '<button class="s g" onclick="viewT('+i+')">Dados</button><button class="s g" onclick="structure('+i+')">Estrutura</button><button class="s r" onclick="drop('+i+')">Apagar</button></div></div>').join('')||'<p class="m">Ainda não há tabelas. Cria a primeira abaixo.</p>')}
+function secBuilder(){return '<h2>Nova tabela</h2><div class="card"><input style="width:100%" placeholder="Nome (ex: fotos)" value="'+esc(S.tname)+'" oninput="S.tname=this.value"><p class="m">A coluna <b>id</b> é criada automaticamente. Para criar uma relação, escolhe a tabela em "liga a".</p>'+
+ S.cols.map((c,i)=>'<div class="row" style="margin-bottom:6px"><input style="flex:1;min-width:90px" placeholder="coluna" value="'+esc(c.n)+'" oninput="S.cols['+i+'].n=this.value"><select onchange="S.cols['+i+'].t=this.value">'+['TEXT','INTEGER','REAL','BLOB','NUMERIC'].map(x=>'<option'+(c.t==x?' selected':'')+'>'+x+'</option>').join('')+'</select>'+
+ '<select onchange="S.cols['+i+'].ref=this.value"><option value="">sem relação</option>'+S.tables.map(t=>'<option value="'+esc(t.name)+'"'+(c.ref==t.name?' selected':'')+'>liga a '+esc(t.name)+'</option>').join('')+'</select><button class="s g" onclick="rmCol('+i+')">x</button></div>').join('')+
+ '<div class="row"><button class="g" onclick="addCol()">+ coluna</button><button onclick="mk()">Criar tabela</button></div></div>'}
+function secSql(){return '<h2>Editor SQL</h2><div class="card"><textarea placeholder="SELECT * FROM fotos;" oninput="S.sql=this.value">'+esc(S.sql)+'</textarea><div class="row" style="margin-top:8px"><button onclick="run(S.sql)">Executar</button></div></div>'+result()}
+function secKeys(){const p=S.cur,u=S.st.public_url||'(configura a Conexão)',l=S.lim||{rpm:600,storage_mb:500,used_bytes:0};
+ return '<div class="card"><small>URL</small><code onclick="copy(\''+esc(u)+'\')">'+esc(u)+'</code><small>Chave pública (só lê tabelas liberadas)</small><code onclick="copy(\''+p.pk+'\')">'+p.pk+'</code>'+
+ '<small>Chave secreta (acesso total, nunca no site)</small><code onclick="copy(\''+p.sk+'\')">'+p.sk+'</code><small>Toca numa chave para copiar</small>'+
+ '<div class="row" style="margin-top:8px"><button class="s g" onclick="rotate(\'pk\')">Nova chave pública</button><button class="s g" onclick="rotate(\'sk\')">Nova chave secreta</button></div></div>'+
+ '<h2>Limites</h2><div class="card"><div class="row"><label>Pedidos por minuto <input id="l_r" type="number" min="0" style="width:100px" value="'+l.rpm+'"></label><label>Armazenamento (MB) <input id="l_m" type="number" min="0" style="width:100px" value="'+l.storage_mb+'"></label><label>Transferência por mês (MB) <input id="l_t" type="number" min="0" style="width:100px" value="'+(l.transfer_mb??5000)+'"></label></div>'+
+ '<p class="m">Em uso: '+(l.used_bytes/1048576).toFixed(2)+' MB guardados, '+((l.transfer_used||0)/1048576).toFixed(2)+' MB transferidos este mês. Coloca 0 para sem limite.</p><button class="s" onclick="saveLim()">Guardar limites</button></div>'}
+function secStorage(){let h='<h2>Armazenamento</h2><div class="card"><div class="row"><input id="bk_n" placeholder="Novo bucket (ex: fotos)" style="flex:1"><label><input type="checkbox" id="bk_p"> público</label><button class="s" onclick="newBucket()">Criar</button></div><small>Público: qualquer pessoa abre o link. Privado: só com URL assinada ou como dono.</small></div>';
+ h+=S.bk.map((b,i)=>'<div class="card"><div class="row"><b>'+esc(b.name)+'</b><small>'+(b.public?'público':'privado')+', '+b.files+' ficheiros, '+(b.bytes/1048576).toFixed(2)+' MB</small></div><div class="row" style="margin-top:8px"><button class="s g" onclick="showFiles('+i+')">Ficheiros</button><button class="s g" onclick="togBucket('+i+')">Tornar '+(b.public?'privado':'público')+'</button><button class="s r" onclick="delBucket('+i+')">Apagar</button></div></div>').join('');
+ if(S.files){const f=S.files;h+='<div class="card"><div class="top"><b>'+esc(f.bucket)+'</b><button class="s g" onclick="S.files=null;draw()">Fechar</button></div>'+(f.rows.length?'<div class="sc"><table><tr><th></th><th>nome</th><th>tamanho</th><th>tipo</th></tr>'+f.rows.map((r,j)=>'<tr><td>'+(f.pub?'<button class="s g" onclick="copy(\''+esc((S.st.public_url||'')+'/files/'+S.cur.id+'/'+r.path)+'\')">URL</button> ':'')+'<button class="s r" onclick="delFile('+j+')">x</button></td><td>'+esc(r.name)+'</td><td>'+(r.size/1024).toFixed(1)+' KB</td><td>'+esc(r.mime)+'</td></tr>').join('')+'</table></div>':'<small>Sem ficheiros.</small>')+(f.pub?'':'<br><small>Ficheiros privados: o teu servidor gera a URL assinada com POST /storage/sign.</small>')+'</div>'}
+ return h}
+function secUsers(){return '<h2>Usuários</h2>'+(S.users.length?'<div class="sc"><table><tr><th></th><th>email</th><th>criado</th></tr>'+S.users.map((u,i)=>'<tr><td><button class="s g" onclick="resetUser('+i+')">código</button> <button class="s r" onclick="delUser('+i+')">x</button></td><td>'+esc(u.email)+'</td><td>'+esc(new Date(u.created).toLocaleDateString())+'</td></tr>').join('')+'</table></div><small>"código" gera um código de uso único (1 hora) para recuperar a senha em /auth/reset.</small>':'<p class="m">Ainda não há usuários. O registo é feito pelo teu site em /auth/signup.</p>')}
+const FN_HELP=`Escreve uma função chamada handler(req) e devolve o resultado.
+
+req.method, req.path, req.query, req.headers
+req.body    JSON já convertido (req.raw é o texto original)
+req.role    "service" | "anon" | "webhook"
+req.user    {id, email} ou null
+
+Devolver:
+  { status: 201, json: {...} }   resposta JSON
+  { status: 200, text: "ok" }    texto
+  qualquer outro valor           vira JSON com status 200
+
+Disponível:
+  db.query(sql, [params])   lista de objetos
+  db.exec(sql, [params])    {changes}
+  http.get(url)  http.post(url, corpo)  http.request({method,url,headers,body})   devolve {status, body}
+  jobs.enqueue("outra_funcao", dados, atrasoEmSegundos)
+  env.get("NOME")           variável guardada abaixo
+  crypto.hmacSha256(chave, texto)   hex, para verificar assinaturas
+  console.log(...)
+
+Limites: 10 s por execução, 4 ao mesmo tempo, sem await nem Promise.
+Funções agendadas e tarefas só correm enquanto o telefone está ligado.`;
+function fnUrl(f){const b=S.st.public_url||'https://SEU-RELAY/t/SEU-TUNEL';return f.kind=='hook'?b+'/hooks/'+S.cur.id+'/'+f.name+'/'+f.secret:b+'/fn/'+f.name}
+function secFunctions(){let h='<h2>Funções de backend</h2>';
+ if(S.fed){const f=S.fed;h+='<div class="card"><div class="top"><b>'+(f.old?'Editar função':'Nova função')+'</b><button class="s g" onclick="S.fed=null;draw()">Fechar</button></div>'+
+  '<div class="row"><input placeholder="nome (ex: ola)" value="'+esc(f.name)+'" '+(f.old?'disabled ':'')+'oninput="S.fed.name=this.value" style="flex:1"><select onchange="S.fed.kind=this.value"><option value="endpoint"'+(f.kind=='endpoint'?' selected':'')+'>Endpoint /fn</option><option value="hook"'+(f.kind=='hook'?' selected':'')+'>Webhook</option></select></div>'+
+  '<div class="row" style="margin:8px 0"><label>Repetir a cada <input type="number" min="0" style="width:80px" value="'+f.schedule+'" oninput="S.fed.schedule=this.value"> minutos (0 = nunca)</label></div>'+
+  '<textarea style="min-height:200px" oninput="S.fed.code=this.value">'+esc(f.code)+'</textarea><div class="row" style="margin-top:8px"><button onclick="saveFn()">Guardar</button></div></div>'}
+ h+=S.fns.map((f,i)=>'<div class="card"><div class="row"><b>'+esc(f.name)+'</b><small>'+(f.kind=='hook'?'webhook':'endpoint')+(f.schedule_min>0?', a cada '+f.schedule_min+' min':'')+(f.enabled==1?'':', desativada')+'</small></div>'+
+  '<code onclick="copy(\''+esc(fnUrl(f))+'\')">'+esc(fnUrl(f))+'</code>'+(f.last_run?'<small>Última execução: '+esc(new Date(f.last_run).toLocaleString())+', '+esc(f.last_status||'')+'</small>':'<small>Ainda não executou.</small>')+
+  '<div class="row" style="margin-top:8px"><button class="s g" onclick="editFn('+i+')">Editar</button><button class="s g" onclick="testFn('+i+')">Testar</button><button class="s g" onclick="togFn('+i+')">'+(f.enabled==1?'Desativar':'Ativar')+'</button><button class="s r" onclick="delFn('+i+')">Apagar</button></div></div>').join('')||'<p class="m">Ainda não há funções.</p>';
+ if(S.fnres){const r=S.fnres.r;h+='<div class="card"><b>Teste de '+esc(S.fnres.name)+': '+(r.ok?'ok':'erro')+'</b>'+(r.error?'<div class="err">'+esc(r.error)+'</div>':'')+'<pre>'+esc(JSON.stringify(r.value,null,1))+'</pre>'+(r.log?'<small>Log</small><pre>'+esc(r.log)+'</pre>':'')+'</div>'}
+ h+='<div class="card"><button onclick="newFn()">+ Nova função</button></div><details><summary>Como escrever uma função</summary><pre>'+esc(FN_HELP)+'</pre></details>';
+ h+='<h3>Tarefas em segundo plano</h3>'+(S.jobs.length?'<div class="sc"><table><tr><th>função</th><th>estado</th><th>tentativas</th><th>quando</th></tr>'+S.jobs.map(j=>'<tr><td>'+esc(j.fn)+'</td><td>'+esc(j.status)+(j.error?' ('+esc(j.error)+')':'')+'</td><td>'+j.attempts+'</td><td>'+esc(new Date(j.run_at).toLocaleString())+'</td></tr>').join('')+'</table></div><button class="s g" style="margin-top:6px" onclick="clearJobs()">Limpar concluídas</button>':'<p class="m">Sem tarefas. Uma função cria tarefas com jobs.enqueue("nome", dados, atrasoEmSegundos). Falhas repetem até 3 vezes.</p>');
+ h+='<h3>Variáveis (segredos das funções)</h3>'+S.env.map((e,i)=>'<div class="row"><code style="flex:1;margin:2px 0">'+esc(e.k)+' = '+esc(String(e.v??'').length>6?String(e.v).slice(0,3)+'…':e.v)+'</code><button class="s r" onclick="delEnv('+i+')">x</button></div>').join('')+'<div class="row" style="margin-top:6px"><input id="ev_k" placeholder="NOME" style="flex:1"><input id="ev_v" placeholder="valor" style="flex:1"><button class="s" onclick="addEnv()">Guardar</button></div>';
+ return h}
+function secBackup(){return '<h2>Backup</h2><div class="card"><div class="row"><button class="g" onclick="exportData()">Exportar (JSON)</button><label class="m">Importar: <input type="file" accept=".json,application/json" onchange="importData(this)"></label></div><small>O backup inclui tabelas, índices, dados e permissões. O ficheiro vai para Downloads.</small></div>'}
+function secDocs(){const d=docs();return '<h2>Documentação da API</h2><div class="card"><h3>Tabelas</h3><pre>'+esc(d.tl)+'</pre><h3>Endpoints</h3><pre>'+esc(d.eps)+'</pre><h3>Exemplos</h3><div class="row"><select onchange="S.lang=this.value;draw()">'+
+ [['curl','curl'],['js','JavaScript / Web'],['flutter','Flutter'],['android','Android (Kotlin)'],['ios','iOS (Swift)']].map(o=>'<option value="'+o[0]+'"'+(S.lang==o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select></div><pre>'+esc(d.code)+'</pre></div>'}
+function draw(){const A=$('app');
+ if(!T){A.innerHTML='<p>Abre este painel pelo app MiniDB.</p>';return}
+ if(S.view=='cfg'){const s=S.st;A.innerHTML='<div class="top"><h1>Conexão</h1><button class="g" onclick="home()">Voltar</button></div><p class="m">O telefone liga-se ao teu relay (o ficheiro <b>relay.py</b>, num servidor teu). É assim que os sites chegam a ele pela internet.</p>'+
+ '<div class="card"><small>Endereço do relay (com https://)</small><input id="cfg_u" style="width:100%" value="'+esc(s.relay_url)+'" placeholder="https://relay.meudominio.com"><br><br><small>Nome do túnel</small><input id="cfg_t" style="width:100%" value="'+esc(s.tunnel)+'" placeholder="ex: ismael"><br><br>'+
+ '<small>Token do relay '+(s.has_token?'(já guardado, deixa vazio para manter)':'')+'</small><input id="cfg_k" style="width:100%" type="password"><br><br><button onclick="saveCfg()">Guardar</button></div>'+msgs()+
+ '<div class="card"><small>Estado</small><br><b>'+esc(s.relay_state)+'</b><br><br><small>URL pública dos teus projetos</small><code>'+esc(s.public_url||'—')+'</code></div>';return}
+ if(S.view=='proj'){A.innerHTML='<div class="top"><h1>'+esc(S.cur.name)+'</h1><button class="g" onclick="home()">Voltar</button></div>'+msgs()+secKeys()+secTables()+secBuilder()+secSql()+secStorage()+secUsers()+secFunctions()+secBackup()+secDocs();return}
+ A.innerHTML='<div class="top"><h1>MiniDB</h1><button class="g" onclick="S.view=\'cfg\';go(async()=>{S.st=await api(\'/status\')})">Conexão</button></div><p class="m">Relay: <b>'+esc(S.st.relay_state||'…')+'</b></p>'+msgs()+
+ '<div class="card"><div class="row"><input id="pn" style="flex:1" placeholder="Nome do novo projeto"><button onclick="newP()">Criar</button></div></div>'+
+ (S.ps.map(p=>'<div class="card"><div class="row" style="justify-content:space-between"><b>'+esc(p.name)+'</b><span><button class="s" onclick="openP(\''+p.id+'\')">Abrir</button> <button class="s r" onclick="delP(\''+p.id+'\')">Apagar</button></span></div></div>').join('')||'<p class="m">Cria o teu primeiro projeto.</p>')}
+home();
+</script></body></html>
